@@ -1,400 +1,378 @@
+/*
+ * ============================================================================
+ * FILE: local_controller.c
+ * OWNERSHIP NOTE: MIXED: baseline by DAM HOANG HUY; proposed improvements by TRAN VO VUONG
+ *
+ * Attribution in this file is based on comparison with the preserved baseline
+ * in original_source/. "Proposed contribution" means code added/changed in the
+ * improved version and should only be claimed after review, testing, and actual
+ * contribution by the named team member.
+ * ============================================================================
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include "ipc.h"
+#include "railway_controller.h"
 #include <pthread.h>
 #include <stdbool.h>
 #include <unistd.h>
 #include <string.h>
-#include <time.h>
 #include <errno.h>
 
-//placeholder values will be changed later with appropriate calculations
+/* [ORIGINAL BASELINE - DAM HOANG HUY] Timing structure retained; values should be justified in the Implementation Note. */
 #define AMBER_DURATION 4
 #define ALL_RED_DURATION 2
 #define CLEARANCE_DURATION 10
-#define MAX_GREEN_SENSOR 30
 #define CHECK_INTERVAL 10
-const int GREEN_DURATION_MODES[2][2] = { //green duration differs based on mode
-		[MODE_CONGESTION] = {30, 20}, //more value for vertical since bigger road and cut off by train track
-		[MODE_SENSOR] = {30,30} //sensor driven mode used for off-peak hours
+/* [PROPOSED CONTRIBUTION - TRAN VO VUONG] Explicit pedestrian crossing interval. */
+#define PEDESTRIAN_DURATION 8
+
+const int GREEN_DURATION_MODES[2][2] = {
+    [MODE_CONGESTION] = {30, 20},
+    [MODE_SENSOR] = {30, 30}
 };
 
-pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+/* [ORIGINAL BASELINE - DAM HOANG HUY] Shared road-controller state protected by one mutex. */
+static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+static LightState current_state = V_GREEN;
+static OpMode current_mode = MODE_SENSOR;
+static int intersection_id = 1;
+static bool car_waiting_V = false;
+static bool car_waiting_H = false;
 
-LightState current_state = V_GREEN;  //start with vertical green
-OpMode current_mode = MODE_SENSOR; //start with default mode (off-peak hours)
-bool train_arriving = false;
-int intersection_id = 1;
+/* [PROPOSED CONTRIBUTION - TRAN VO VUONG] Pedestrian demand is now implemented rather than left as a placeholder. */
+static bool pedestrian_pending = false;
 
-bool car_waiting_V = false;
-bool car_waiting_H = false;
+static name_attach_t *attach;
+static int central_coid = -1;
 
-name_attach_t *attach;
-int central_coid = -1;
-
-//helper function to determine which duration of green to use
-int green_duration(int is_vertical) {
-	pthread_mutex_lock(&m);
-	OpMode mode = current_mode;
-	pthread_mutex_unlock(&m);
-	return GREEN_DURATION_MODES[mode][is_vertical ? 0 : 1];
-}
-//function to get the current light state for both horizontal and vertical directions
-LightState get_state(LightState current_state, int is_vertical) {
-	switch(current_state) {
-		case V_GREEN:
-			return is_vertical ? V_GREEN : H_RED;
-		case V_AMBER:
-			return is_vertical ? V_AMBER : H_RED;
-		case H_GREEN:
-			return is_vertical ? V_RED : H_GREEN;
-		case H_AMBER:
-			return is_vertical ? V_RED : H_AMBER;
-		case ALL_RED:
-		case RAIL_SAFE:
-		default:
-			return is_vertical ? V_RED : H_RED; //in ALL_RED and RAIL_SAFE cases both vertical and horizontal stays red
-	}
-
+/* SECTION: Read the configured green duration for the current mode and direction.
+ * ATTRIBUTION: ORIGINAL BASELINE - DAM HOANG HUY. */
+static int green_duration(bool is_vertical) {
+    pthread_mutex_lock(&m);
+    OpMode mode = current_mode;
+    pthread_mutex_unlock(&m);
+    return GREEN_DURATION_MODES[mode][is_vertical ? 0 : 1];
 }
 
-//function for sending status to central controller
-void send_status(void) {
-
-	pthread_mutex_lock(&m);
-	LightState state = current_state;
-	OpMode mode = current_mode;
-	bool train = train_arriving;
-	pthread_mutex_unlock(&m);
-
-	if(central_coid == -1) {
-		central_coid = name_open(CENTRAL_ATTACH_POINT, 0);
-	}
-	if(central_coid == -1) return;
-
-	//data to be sent to central
-	StatusMsg msg;
-	memset(&msg, 0, sizeof(msg));
-	msg.hdr.type = MSG_STATUS_UPDATE;
-	msg.intersection_id = intersection_id;
-	msg.mode = mode;
-	msg.V_light = get_state(state, 1);
-	msg.H_light = get_state(state, 0);
-	msg.train_warning = train ? 1 : 0;
-
-	//send data to central, drop if fails
-	AckReply reply;
-	if(MsgSend(central_coid, &msg, sizeof(msg), &reply, sizeof(reply)) == -1) {
-		name_close(central_coid);
-		central_coid = -1;
-	}
+/* [ORIGINAL BASELINE - DAM HOANG HUY] Mapping from controller phase to each road's displayed light. */
+/* SECTION: Map the shared controller phase to the light shown on each road direction.
+ * ATTRIBUTION: ORIGINAL BASELINE - DAM HOANG HUY. */
+static LightState get_state(LightState state, bool is_vertical) {
+    switch (state) {
+        case V_GREEN: return is_vertical ? V_GREEN : H_RED;
+        case V_AMBER: return is_vertical ? V_AMBER : H_RED;
+        case H_GREEN: return is_vertical ? V_RED : H_GREEN;
+        case H_AMBER: return is_vertical ? V_RED : H_AMBER;
+        case PED_CROSS:
+        case ALL_RED:
+        case RAIL_SAFE:
+        default: return is_vertical ? V_RED : H_RED;
+    }
 }
 
-//helper function to switch to next state and send status to central controller every time switching
-void set_phase(LightState next_state) {
-	pthread_mutex_lock(&m);
-	current_state = next_state;
-	pthread_mutex_unlock(&m);
-	send_status();
+/* [PROPOSED CONTRIBUTION - TRAN VO VUONG] Snapshot shared state before IPC so the road mutex is never held across MsgSend(). */
+/* SECTION: Snapshot local state and report it to Central without stopping autonomous control if IPC fails.
+ * ATTRIBUTION: MIXED - baseline DAM HOANG HUY; safer snapshot/failure diagnostics TRAN VO VUONG. */
+static void send_status(void) {
+    pthread_mutex_lock(&m);
+    LightState state = current_state;
+    OpMode mode = current_mode;
+    bool ped = pedestrian_pending;
+    pthread_mutex_unlock(&m);
+
+    RailState rail = railway_get_state();
+
+    if (central_coid == -1)
+        central_coid = name_open(CENTRAL_ATTACH_POINT, 0);
+
+    /* [ORIGINAL BEHAVIOUR] Local operation continues if Central is unavailable. */
+    if (central_coid == -1) return;
+
+    StatusMsg msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.hdr.type = MSG_STATUS_UPDATE;
+    msg.intersection_id = intersection_id;
+    msg.mode = mode;
+    msg.V_light = get_state(state, true);
+    msg.H_light = get_state(state, false);
+    msg.train_warning = (rail != RAIL_CLEAR);
+    msg.rail_state = rail;
+    msg.pedestrian_pending = ped ? 1 : 0;
+
+    AckReply reply;
+    if (MsgSend(central_coid, &msg, sizeof(msg), &reply, sizeof(reply)) == -1) {
+        name_close(central_coid);
+        central_coid = -1;
+        /* [PROPOSED CONTRIBUTION - TRAN VO VUONG] Explicit diagnostic demonstrates fail-safe local independence. */
+        printf("[I%d] Central unavailable; continuing autonomous control.\n", intersection_id);
+        fflush(stdout);
+    }
 }
 
-//helper function for train arrival detection
-bool train_arrive(void) {
-	pthread_mutex_lock(&m);
-	bool arrive = train_arriving;
-	pthread_mutex_unlock(&m);
-	return arrive;
+/* SECTION: Atomically change the local traffic phase and publish the new status.
+ * ATTRIBUTION: ORIGINAL BASELINE - DAM HOANG HUY. */
+static void set_phase(LightState next_state) {
+    pthread_mutex_lock(&m);
+    current_state = next_state;
+    pthread_mutex_unlock(&m);
+    printf("[I%d] phase -> %d\n", intersection_id, next_state);
+    fflush(stdout);
+    send_status();
 }
 
-//helper function to allow emergency state switch without waiting for sleep()
-bool interrupt_sleep(int seconds) {
-	for (int i = 0; i < seconds; i++) {
-		sleep(1);
-		if(train_arrive()) return false;
-	}
-	return true;
+/* [PROPOSED CONTRIBUTION - TRAN VO VUONG] Railway module replaces the old train_arriving boolean. */
+/* SECTION: Query the railway module to decide whether road traffic must stop.
+ * ATTRIBUTION: PROPOSED CONTRIBUTION - TRAN VO VUONG. */
+static bool railway_stop_required(void) {
+    return railway_requires_road_stop();
 }
 
-//hold the current light green until max allowed time reached, check the other direction in the process, if found then switch
-bool hold_green(bool is_vertical) {
-	int total_elapsed = 0; //total time ran
-	int checkpoint = 0; //checkpoint to check if the other direction has car waiting
-	while(1) {
-		sleep(1);
-		if(train_arrive()) return false;
-
-		total_elapsed++;
-		checkpoint++;
-
-		if(total_elapsed >= GREEN_DURATION_MODES[MODE_SENSOR][is_vertical ? 0 : 1]) return true; //if the max allowed time reach then switch
-
-		if(checkpoint >= CHECK_INTERVAL){ //if reach the check interval then see if another car is waiting, if yes then switch, if not continue
-			pthread_mutex_lock(&m);
-			bool other_side_waiting = is_vertical ? car_waiting_H : car_waiting_V;
-			pthread_mutex_unlock( &m);
-
-			checkpoint = 0; //reset for the next check
-			if(other_side_waiting) return true; //if other side got car waiting then switch
-		}
-	}
+/* [ORIGINAL IDEA, IMPROVED NAME] Sleep can be interrupted by railway safety events. */
+/* SECTION: Wait in short intervals so safety events can interrupt a normal traffic phase.
+ * ATTRIBUTION: MIXED - baseline timing idea DAM HOANG HUY; extended safety checks TRAN VO VUONG. */
+static bool interruptible_sleep(int seconds) {
+    for (int i = 0; i < seconds; ++i) {
+        sleep(1);
+        if (railway_stop_required()) return false;
+    }
+    return true;
 }
 
-//traffic state machine
-void traffic_light_state(void) {
-	pthread_mutex_lock(&m);
-	LightState state = current_state;
-	pthread_mutex_unlock(&m);
+/* [ORIGINAL BASELINE - DAM HOANG HUY] Sensor mode checks opposite-road demand periodically. */
+/* SECTION: Implement sensor-driven green holding and end the phase when opposing/pedestrian demand requires service.
+ * ATTRIBUTION: MIXED - sensor baseline DAM HOANG HUY; pedestrian integration TRAN VO VUONG. */
+static bool hold_green(bool is_vertical) {
+    int elapsed = 0;
+    int checkpoint = 0;
+    const int maximum = green_duration(is_vertical);
 
-	int horizontal_next = 1;
+    while (elapsed < maximum) {
+        sleep(1);
+        if (railway_stop_required()) return false;
+        ++elapsed;
+        ++checkpoint;
 
-	while(1) {
+        if (checkpoint >= CHECK_INTERVAL) {
+            pthread_mutex_lock(&m);
+            bool other_waiting = is_vertical ? car_waiting_H : car_waiting_V;
+            bool ped_waiting = pedestrian_pending;
+            pthread_mutex_unlock(&m);
+            checkpoint = 0;
 
-		//train arrival handling
-		if(train_arrive()) {
-			if(state == V_GREEN) { //vertical is green and train detected so switch to clearance duration instead
-				interrupt_sleep(CLEARANCE_DURATION);
-				set_phase(V_AMBER);
-				interrupt_sleep(AMBER_DURATION);
-			} else if(state == H_GREEN){ //horizontal is green so switch to yellow for clearance on vertical
-				set_phase(H_AMBER);
-				interrupt_sleep(AMBER_DURATION);
-			} else if(state == ALL_RED && horizontal_next == 1) { //All lights currently at red so switch to vertical green for clearing
-				set_phase(V_GREEN);
-				interrupt_sleep(CLEARANCE_DURATION);
-				set_phase(V_AMBER);
-				interrupt_sleep(AMBER_DURATION);
-			}
-			//set to rail protocol then sleep until train is cleared, after that set v_green first
-			set_phase(RAIL_SAFE);
-			while(train_arrive()) sleep(1);
-			state = V_GREEN;
-			continue;
-		}
-
-		//usual state machine mechanism
-		switch(state) {
-			case V_GREEN: {
-				set_phase(V_GREEN);
-				bool advanced;
-				pthread_mutex_lock(&m);
-				OpMode mode = current_mode;
-				pthread_mutex_unlock(&m);
-
-				//additional step for the sensor driven mode
-				if (mode == MODE_SENSOR) {
-					advanced = hold_green(true);
-					if (advanced) {
-						pthread_mutex_lock(&m);
-						car_waiting_V = false;
-						pthread_mutex_unlock(&m);
-					}
-				} else {
-					advanced = interrupt_sleep(green_duration(1));
-				}
-				state = advanced ? V_AMBER : state;
-				break;
-			}
-
-			case V_AMBER:
-				set_phase(V_AMBER);
-				state = interrupt_sleep(AMBER_DURATION) ? ALL_RED : state;
-				break;
-
-			case ALL_RED:
-				set_phase(ALL_RED);
-
-				if(interrupt_sleep(ALL_RED_DURATION)) {
-					if(horizontal_next) {
-						state = H_GREEN;
-						horizontal_next = 0;
-					} else {
-						state = V_GREEN;
-						horizontal_next = 1;
-					}
-				}
-				break;
-
-			case H_GREEN: {
-				set_phase(H_GREEN);
-				bool advanced;
-				pthread_mutex_lock(&m);
-				OpMode mode = current_mode;
-				pthread_mutex_unlock(&m);
-
-				//additional step for the sensor driven mode
-				if (mode == MODE_SENSOR) {
-					advanced = hold_green(false);
-					if (advanced) {
-						pthread_mutex_lock(&m);
-						car_waiting_H = false;
-						pthread_mutex_unlock(&m);
-					}
-				} else {
-					advanced = interrupt_sleep(green_duration(0));
-				}
-				state = advanced ? H_AMBER : state;
-				break;
-			}
-
-			case H_AMBER:
-				set_phase(H_AMBER);
-				state = interrupt_sleep(AMBER_DURATION) ? ALL_RED : state;
-				break;
-
-			case RAIL_SAFE:
-				break;
-		}
-	}
+            /* [PROPOSED CONTRIBUTION - TRAN VO VUONG] A pedestrian request can also end a green phase at a safe checkpoint. */
+            if (other_waiting || ped_waiting) return true;
+        }
+    }
+    return true;
 }
 
-//handle messages send to local controller
-void handle_message(const Anymsg *msg, AckReply *reply) {
+/* [PROPOSED CONTRIBUTION - TRAN VO VUONG] Pedestrians are served only when both road directions are red. */
+/* SECTION: Serve a pending pedestrian request only while both vehicle directions are safely stopped.
+ * ATTRIBUTION: PROPOSED CONTRIBUTION - TRAN VO VUONG. */
+static bool serve_pedestrian_if_needed(void) {
+    pthread_mutex_lock(&m);
+    bool pending = pedestrian_pending;
+    if (pending) pedestrian_pending = false;
+    pthread_mutex_unlock(&m);
 
-	//change mode sensor or congestion sent from central
-	if (msg->hdr.type == MSG_COMMAND_SET_MODE) {
-		pthread_mutex_lock(&m);
-		current_mode = msg->command.target_mode;
-		pthread_mutex_unlock(&m);
+    if (!pending) return true;
 
-		snprintf(reply->buf, REPLY_BUF_SIZE, "Mode changed to %d", msg->command.target_mode);
-
-	} else if (msg->hdr.type == MSG_SENSOR_EVENT) { //for sensor-driven events
-		pthread_mutex_lock(&m);
-		if (msg->sensor.event == TRAIN_GATE_DOWN || msg->sensor.event == TRAIN_FAULT) {
-			train_arriving = true;
-
-		} else if (msg->sensor.event == TRAIN_GATE_CLEAR) {
-			train_arriving = false;
-		} else if (msg->sensor.event == CAR_DETECTED_V) {
-			car_waiting_V = true;
-		} else if (msg->sensor.event == CAR_DETECTED_H) {
-			car_waiting_H = true;
-		}
-		/*
-
-
-			SPACE FOR PEDESTRIAN CASE
-
-
-
-		 */
-		pthread_mutex_unlock(&m);
-		snprintf(reply->buf, REPLY_BUF_SIZE, "Sensor event %d processed", msg->sensor.event);
-
-	} else {
-		snprintf(reply->buf, REPLY_BUF_SIZE, "Unknown message type %d", msg->hdr.type); //message not known
-	}
+    set_phase(PED_CROSS);
+    for (int i = 0; i < PEDESTRIAN_DURATION; ++i) {
+        sleep(1);
+        if (railway_stop_required()) return false; /* railway safety has highest priority */
+    }
+    set_phase(ALL_RED);
+    return true;
 }
 
-//listen for message sent to local controller
-void *server_thread(void *arg) {
+/* [PROPOSED CONTRIBUTION - TRAN VO VUONG] Railway handling is isolated and explicitly fail-safe. */
+/* SECTION: Move the intersection into a fail-safe railway state and resume traffic after clearance.
+ * ATTRIBUTION: PROPOSED CONTRIBUTION - TRAN VO VUONG, based on the original train-handling concept by DAM HOANG HUY. */
+static void handle_railway_event(LightState state, int horizontal_next) {
+    if (state == V_GREEN) {
+        /* Existing design assumption: clear the railway-adjacent vertical road before stopping. */
+        sleep(CLEARANCE_DURATION);
+        set_phase(V_AMBER);
+        sleep(AMBER_DURATION);
+    } else if (state == H_GREEN) {
+        set_phase(H_AMBER);
+        sleep(AMBER_DURATION);
+    } else if (state == ALL_RED && horizontal_next) {
+        set_phase(V_GREEN);
+        sleep(CLEARANCE_DURATION);
+        set_phase(V_AMBER);
+        sleep(AMBER_DURATION);
+    }
 
-	Anymsg msg;
-	int rcvid = 0, msgnum = 0;
-	int Stay_alive = 1, living = 0;
+    set_phase(RAIL_SAFE);
+    if (railway_has_fault()) {
+        printf("[I%d] RAILWAY FAULT: roads held safe; fault reported to Central when available.\n", intersection_id);
+        fflush(stdout);
+    }
 
-	living = 1;
-	while (living) {
-
-		rcvid = MsgReceive(attach->chid, &msg, sizeof(msg), NULL);
-
-		if (rcvid == -1) {
-			printf("\nFailed to receive\n");
-			break;
-		}
-
-		//handle pulses
-		if (rcvid == 0) {
-			switch (msg.hdr.code) {
-				case _PULSE_CODE_DISCONNECT:
-					if (Stay_alive == 0) {
-						ConnectDetach(msg.hdr.scoid);
-						printf("\n[I%d] Server was told to Detach ...\n", intersection_id);
-						living = 0;
-						continue;
-					} else {
-						printf("\n[I%d] Server received Detach pulse but rejected it ...\n", intersection_id);
-					}
-					break;
-
-				case _PULSE_CODE_UNBLOCK:
-					printf("\n[I%d] Server got _PULSE_CODE_UNBLOCK after %d msgnum\n", intersection_id, msgnum);
-					break;
-
-				case _PULSE_CODE_COIDDEATH:
-					printf("\n[I%d] Server got _PULSE_CODE_COIDDEATH after %d msgnum\n", intersection_id, msgnum);
-					break;
-
-				case _PULSE_CODE_THREADDEATH:
-					printf("\n[I%d] Server got _PULSE_CODE_THREADDEATH after %d msgnum\n", intersection_id, msgnum);
-					break;
-
-				default:
-					printf("\n[I%d] Server got some other pulse after %d msgnum\n", intersection_id, msgnum);
-					break;
-			}
-			continue;
-		}
-
-		//message detected
-		if (rcvid > 0) {
-			msgnum++;
-
-			//handshake
-			if (msg.hdr.type == _IO_CONNECT) {
-				MsgReply(rcvid, EOK, NULL, 0);
-				msgnum--;
-				continue;
-			}
-
-			//I/O messages
-			if (msg.hdr.type > _IO_BASE && msg.hdr.type <= _IO_MAX) {
-				MsgError(rcvid, ENOSYS);
-				continue;
-			}
-
-			//process message received
-			AckReply reply;
-			memset(&reply, 0, sizeof(reply));
-			reply.hdr.type = 0x01;
-			reply.hdr.subtype = 0x00;
-
-			handle_message(&msg, &reply); //handle different messages
-			MsgReply(rcvid, EOK, &reply, sizeof(reply)); //send back reply
-		} else {
-			printf("\n[I%d] ERROR: Server received something, but could not handle it correctly\n", intersection_id);
-		}
-	}
-
-	name_detach(attach, 0);
-	return NULL;
+    while (railway_stop_required()) {
+        send_status();
+        sleep(1);
+    }
+    set_phase(ALL_RED);
+    sleep(ALL_RED_DURATION);
 }
 
+/* SECTION: Main local traffic-light state machine for normal, sensor, pedestrian, and railway operation.
+ * ATTRIBUTION: MIXED - original road state machine DAM HOANG HUY; pedestrian/railway improvements TRAN VO VUONG. */
+static void traffic_light_state(void) {
+    LightState state = V_GREEN;
+    int horizontal_next = 1;
 
+    while (1) {
+        if (railway_stop_required()) {
+            handle_railway_event(state, horizontal_next);
+            state = V_GREEN; /* design assumption: restart with vertical road */
+            continue;
+        }
+
+        switch (state) {
+            case V_GREEN: {
+                set_phase(V_GREEN);
+                pthread_mutex_lock(&m);
+                OpMode mode = current_mode;
+                car_waiting_V = false; /* [PROPOSED CONTRIBUTION - TRAN VO VUONG] current green serves queued demand. */
+                pthread_mutex_unlock(&m);
+                bool completed = (mode == MODE_SENSOR) ? hold_green(true)
+                                                       : interruptible_sleep(green_duration(true));
+                if (completed) state = V_AMBER;
+                break;
+            }
+            case V_AMBER:
+                set_phase(V_AMBER);
+                if (interruptible_sleep(AMBER_DURATION)) state = ALL_RED;
+                break;
+
+            case ALL_RED:
+                set_phase(ALL_RED);
+                if (!interruptible_sleep(ALL_RED_DURATION)) break;
+                if (!serve_pedestrian_if_needed()) break;
+                if (horizontal_next) { state = H_GREEN; horizontal_next = 0; }
+                else { state = V_GREEN; horizontal_next = 1; }
+                break;
+
+            case H_GREEN: {
+                set_phase(H_GREEN);
+                pthread_mutex_lock(&m);
+                OpMode mode = current_mode;
+                car_waiting_H = false;
+                pthread_mutex_unlock(&m);
+                bool completed = (mode == MODE_SENSOR) ? hold_green(false)
+                                                       : interruptible_sleep(green_duration(false));
+                if (completed) state = H_AMBER;
+                break;
+            }
+            case H_AMBER:
+                set_phase(H_AMBER);
+                if (interruptible_sleep(AMBER_DURATION)) state = ALL_RED;
+                break;
+
+            case PED_CROSS:
+            case RAIL_SAFE:
+            default:
+                state = ALL_RED;
+                break;
+        }
+    }
+}
+
+/* SECTION: Apply Central commands and simulated sensor events to thread-safe local state.
+ * ATTRIBUTION: MIXED - baseline message handling DAM HOANG HUY; pedestrian/railway events TRAN VO VUONG. */
+static void handle_message(const Anymsg *msg, AckReply *reply) {
+    if (msg->hdr.type == MSG_COMMAND_SET_MODE) {
+        if (msg->command.target_mode != MODE_CONGESTION && msg->command.target_mode != MODE_SENSOR) {
+            snprintf(reply->buf, REPLY_BUF_SIZE, "Invalid mode %d", msg->command.target_mode);
+            return;
+        }
+        pthread_mutex_lock(&m);
+        current_mode = msg->command.target_mode;
+        pthread_mutex_unlock(&m);
+        snprintf(reply->buf, REPLY_BUF_SIZE, "Mode changed to %d", msg->command.target_mode);
+        send_status();
+        return;
+    }
+
+    if (msg->hdr.type == MSG_SENSOR_EVENT) {
+        SensorEvent event = msg->sensor.event;
+
+        /* [PROPOSED CONTRIBUTION - TRAN VO VUONG] Railway events are handled by the new railway module. */
+        if (event == TRAIN_GATE_DOWN || event == TRAIN_GATE_CLEAR ||
+            event == TRAIN_FAULT || event == TRAIN_APPROACHING) {
+            railway_handle_event(event);
+        } else {
+            pthread_mutex_lock(&m);
+            if (event == CAR_DETECTED_V) car_waiting_V = true;
+            else if (event == CAR_DETECTED_H) car_waiting_H = true;
+            else if (event == PEDESTRIAN_PRESSED) pedestrian_pending = true;
+            pthread_mutex_unlock(&m);
+        }
+
+        snprintf(reply->buf, REPLY_BUF_SIZE, "Sensor event %d processed", event);
+        send_status();
+        return;
+    }
+
+    snprintf(reply->buf, REPLY_BUF_SIZE, "Unknown message type %d", msg->hdr.type);
+}
+
+/* SECTION: QNX receive/reply loop that lets IPC events run concurrently with the local state machine.
+ * ATTRIBUTION: ORIGINAL BASELINE - DAM HOANG HUY. */
+static void *server_thread(void *arg) {
+    (void)arg;
+    Anymsg msg;
+    while (1) {
+        int rcvid = MsgReceive(attach->chid, &msg, sizeof(msg), NULL);
+        if (rcvid == -1) { perror("MsgReceive"); break; }
+        if (rcvid == 0) continue; /* QNX pulse; no shutdown protocol required for this PoC. */
+
+        if (msg.hdr.type == _IO_CONNECT) { MsgReply(rcvid, EOK, NULL, 0); continue; }
+        if (msg.hdr.type > _IO_BASE && msg.hdr.type <= _IO_MAX) { MsgError(rcvid, ENOSYS); continue; }
+
+        AckReply reply;
+        memset(&reply, 0, sizeof(reply));
+        reply.hdr.type = 0x01;
+        handle_message(&msg, &reply);
+        MsgReply(rcvid, EOK, &reply, sizeof(reply));
+    }
+    return NULL;
+}
+
+/* SECTION: Initialise one intersection, start its QNX server thread, and run autonomous control.
+ * ATTRIBUTION: MIXED - baseline startup DAM HOANG HUY; railway module initialisation TRAN VO VUONG. */
 int main(int argc, char *argv[]) {
-	if(argc > 1 ) {
-		intersection_id = atoi(argv[1]); //register intersection id from terminal
-	}
+    if (argc > 1) intersection_id = atoi(argv[1]);
+    if (intersection_id < 1 || intersection_id > 6) {
+        fprintf(stderr, "Intersection ID must be 1..6\n");
+        return EXIT_FAILURE;
+    }
 
-	char name[NAME_MAXLEN];
-	local_ctrl_name(name, intersection_id);
+    railway_init();
+    char name[NAME_MAXLEN];
+    local_ctrl_name(name, intersection_id);
+    attach = name_attach(NULL, name, 0);
+    if (!attach) {
+        fprintf(stderr, "Failed to name_attach %s\n", name);
+        return EXIT_FAILURE;
+    }
 
-	//attach using name
-	if((attach = name_attach(NULL, name, 0)) == NULL) {
-		printf("\nFailed to name_attach: %s\n", name);
-		printf("\nAnother server with same name maybe running\n");
-		return EXIT_FAILURE;
-	}
+    printf("I%d local controller listening on %s\n", intersection_id, name);
+    pthread_t server;
+    if (pthread_create(&server, NULL, server_thread, NULL) != 0) {
+        perror("pthread_create");
+        return EXIT_FAILURE;
+    }
 
-	printf("I%d local controller listening on ATTACH_POINT: %s\n", intersection_id, name);
-	fflush(stdout);
-
-	pthread_t t1;
-	pthread_create(&t1, NULL, server_thread, NULL);
-
-	traffic_light_state();
-
-	pthread_join(t1, NULL);
-
-	return 0;
+    send_status();
+    traffic_light_state();
+    pthread_join(server, NULL);
+    name_detach(attach, 0);
+    return 0;
 }
