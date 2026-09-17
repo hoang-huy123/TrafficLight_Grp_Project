@@ -44,20 +44,34 @@ static const char *rail_label(RailState r) {
     }
 }
 
+/* [NEW] Render the control-room override state, with the seconds remaining. */
+static const char *override_label(const StatusMsg *s, char *buf, size_t n) {
+    if (s->override_dir == OVERRIDE_VERTICAL)   snprintf(buf, n, "V %ds", s->override_remaining);
+    else if (s->override_dir == OVERRIDE_HORIZONTAL) snprintf(buf, n, "H %ds", s->override_remaining);
+    else snprintf(buf, n, "-");
+    return buf;
+}
+
 /* [PROPOSED CONTRIBUTION - TRAN VO VUONG] Display now exposes railway fault state and pedestrian demand. */
 /* SECTION: Render the latest status of all intersections in the terminal.
  * ATTRIBUTION: MIXED - baseline DAM HOANG HUY; railway/pedestrian columns TRAN VO VUONG. */
 static void draw_table(void) {
-    printf("\n========================== Traffic Network ==========================\n");
-    printf("%-4s %-10s %-10s %-8s %-11s %-5s\n", "No.", "Vertical", "Horizontal", "Mode", "Railway", "Ped");
-    printf("---------------------------------------------------------------------\n");
+    printf("\n============================= Traffic Network =============================\n");
+    printf("%-4s %-10s %-10s %-8s %-11s %-5s %-9s\n",
+           "No.", "Vertical", "Horizontal", "Mode", "Railway", "Ped", "Override");
+    printf("---------------------------------------------------------------------------\n");
     for (int i = 1; i <= INTERSECTIONS; ++i) {
-        if (!have_data[i]) { printf("%-4d %-10s %-10s %-8s %-11s %-5s\n", i,"-","-","-","-","-"); continue; }
+        if (!have_data[i]) {
+            printf("%-4d %-10s %-10s %-8s %-11s %-5s %-9s\n", i,"-","-","-","-","-","-");
+            continue;
+        }
         StatusMsg *s = &last[i];
-        printf("%-4d %-10s %-10s %-8s %-11s %-5s\n", i, light_label(s->V_light), light_label(s->H_light),
-               mode_label(s->mode), rail_label(s->rail_state), s->pedestrian_pending ? "WAIT" : "-");
+        char ovbuf[16];
+        printf("%-4d %-10s %-10s %-8s %-11s %-5s %-9s\n", i, light_label(s->V_light), light_label(s->H_light),
+               mode_label(s->mode), rail_label(s->rail_state), s->pedestrian_pending ? "WAIT" : "-",
+               override_label(s, ovbuf, sizeof(ovbuf)));
     }
-    printf("=====================================================================\n");
+    printf("===========================================================================\n");
     fflush(stdout);
 }
 

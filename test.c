@@ -48,6 +48,22 @@ static void send_mode(OpMode mode) {
     name_close(coid);
 }
 
+/* [NEW] Ask Central to issue a control-room priority override. target 0 = all
+ * intersections (corridor-wide green path), 1..6 = a single intersection. */
+static void send_override(int dir, int seconds, int target) {
+    int coid = name_open(CENTRAL_ATTACH_POINT, 0);
+    if (coid == -1) { printf("Could not connect to Central\n"); return; }
+    CommandMsg cmd; memset(&cmd, 0, sizeof(cmd));
+    cmd.hdr.type = MSG_COMMAND_OVERRIDE;
+    cmd.hold_green = dir;
+    cmd.hold_seconds = seconds;
+    cmd.target_intersection = target;
+    AckReply reply;
+    if (MsgSend(coid, &cmd, sizeof(cmd), &reply, sizeof(reply)) == -1) printf("Send failed\n");
+    else printf("Override -> %s\n", reply.buf);
+    name_close(coid);
+}
+
 /* [PROPOSED CONTRIBUTION - TRAN VO VUONG] Menu covers the scenarios required for demonstration/testing. */
 /* SECTION: Present demonstration controls for traffic, pedestrian, railway, fault, and mode scenarios.
  * ATTRIBUTION: PROPOSED CONTRIBUTION - TRAN VO VUONG, expanded from the original DAM HOANG HUY menu. */
@@ -62,6 +78,9 @@ static void print_menu(void) {
            " 7) Railway fault\n"
            " 8) Set mode: CONGESTION\n"
            " 9) Set mode: SENSOR\n"
+           "10) Override: hold VERTICAL green\n"
+           "11) Override: hold HORIZONTAL green\n"
+           "12) Override: CANCEL\n"
            " 0) Quit\nChoice: ");
     fflush(stdout);
 }
@@ -93,6 +112,29 @@ int main(void) {
             case 7: send_sensor(id, TRAIN_FAULT, "Railway fault"); break;
             case 8: send_mode(MODE_CONGESTION); break;
             case 9: send_mode(MODE_SENSOR); break;
+            /* [NEW] Control-room override scenarios. */
+            case 10:
+            case 11: {
+                int dir = (choice == 10) ? OVERRIDE_VERTICAL : OVERRIDE_HORIZONTAL;
+                printf("Target intersection (0 = all, 1-6 = one): "); fflush(stdout);
+                if (!fgets(line, sizeof(line), stdin)) return 0;
+                int target = atoi(line);
+                if (target < 0 || target > 6) { printf("Invalid target\n"); break; }
+                printf("Hold seconds (blank = %d, max %d): ", OVERRIDE_DEFAULT_SECONDS, OVERRIDE_MAX_SECONDS);
+                fflush(stdout);
+                if (!fgets(line, sizeof(line), stdin)) return 0;
+                int secs = atoi(line);            /* 0/blank -> local controller uses the default */
+                send_override(dir, secs, target);
+                break;
+            }
+            case 12: {
+                printf("Target intersection (0 = all, 1-6 = one): "); fflush(stdout);
+                if (!fgets(line, sizeof(line), stdin)) return 0;
+                int target = atoi(line);
+                if (target < 0 || target > 6) { printf("Invalid target\n"); break; }
+                send_override(OVERRIDE_NONE, 0, target);
+                break;
+            }
             default: printf("Unknown choice\n"); break;
         }
     }

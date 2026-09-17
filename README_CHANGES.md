@@ -1,61 +1,105 @@
-# Traffic Light Project - Improved Review Version
+# Traffic Light Project - Change Round 2 (QNX Tested)
 
-This folder intentionally preserves the submitted team source in `original_source/` and marks changes in the improved source with comments such as `[ORIGINAL]`, `[IMPROVEMENT]`, `[NEW]`, and `[FIX]`.
+This continues from the previous `README_CHANGES.md`. Everything in this round
+has been **compiled with qcc and run on a real QNX 7.1 VM target**, which the
+previous round had not been.
 
-## What was already in the original project
-- QNX named IPC with `name_attach`, `name_open`, `MsgSend`, `MsgReceive`, `MsgReply`.
-- Central controller, local controllers, display process, and manual test process.
-- Vertical/horizontal traffic-light state machine with amber and all-red clearance.
-- Congestion/fixed-like mode and sensor-driven mode.
-- Car sensor events.
-- Initial railway events and `RAIL_SAFE` state.
-- Local controller continuing its state machine when Central cannot be reached.
-- Mutex protection for local shared state.
+Changed files: `ipc.h`, `local_controller.c`, `central_controller.c`,
+`display.c`, `test.c`.
 
-## Added / improved
-1. **New railway module**: `railway_controller.c/.h`.
-   - Explicit `RAIL_CLEAR`, `RAIL_APPROACHING`, `RAIL_GATE_DOWN_STATE`, `RAIL_FAULT_STATE`.
-   - Separates a railway fault from a normal train event.
-2. **Railway fault reporting**.
-   - `StatusMsg` now carries `rail_state`.
-   - Central prints a visible fault alert and Display shows the railway state.
-3. **Pedestrian implementation**.
-   - `PEDESTRIAN_PRESSED` now records pending demand.
-   - Pedestrian crossing is only served from an all-red road condition.
-   - Railway safety has priority over pedestrian service.
-4. **Expanded event simulator (`test.c`)**.
-   - Car, pedestrian, train approach, gate down, rail clear, railway fault, and mode switching.
-   - Fixed original `send_mode` signature/call mismatch.
-5. **Safer IPC/state handling**.
-   - Local controller snapshots state before blocking IPC; it does not hold the road-state mutex across `MsgSend`.
-   - Input validation for intersection ID and operating mode.
-6. **Improved observability**.
-   - Display includes Railway and Pedestrian columns.
-   - Local logs autonomous operation when Central is unavailable.
+## IMPORTANT before you build
 
-## Important design assumptions to justify before final submission
-- Timing constants are still proof-of-concept values and need evidence/justification in the Implementation Note.
-- After a railway event clears, the controller restarts with the vertical road. The team should justify this based on the chosen physical intersection/railway layout.
-- The railway module models railway state; it does not yet implement a separate train-line controller/process that drives a physical train signal.
-- `MsgSend` is synchronous. Central broadcasts commands sequentially, so a more advanced implementation could use worker threads/pulses if stronger timing isolation is required.
-- Sensor demand is represented by booleans, not a vehicle queue/count. This is a deliberate proof-of-concept simplification.
+- `ipc.h` exists as a **separate copy in each of the four Momentics projects**.
+  All four copies must be replaced, or you get errors like
+  `OVERRIDE_NONE undeclared`.
+- `StatusMsg` and `CommandMsg` changed size, so **all four binaries must be
+  rebuilt and redeployed together**. Mixing an old binary with a new one
+  compiles fine but exchanges garbage at runtime.
+- `/tmp` on the QNX VM is cleared on reboot, so the binaries must be copied
+  across again after every restart.
 
-## Recommended QNX build
-Example commands (adapt to your QNX environment):
+## Verified on QNX 
 
-```sh
-qcc -Wall -Wextra -o central_controller central_controller.c
-qcc -Wall -Wextra -o display display.c
-qcc -Wall -Wextra -pthread -o local_controller local_controller.c railway_controller.c
-qcc -Wall -Wextra -o test test.c
-```
+- The custom `msg_header_t` / `_mysigval` structs in `ipc.h` compile and work
+  correctly on QNX 7.1. They are not a hack - they come from the course's own
+  Week 8 `NativeMsgPass-Server-1.c` example.
+- `-pthread` is not needed on QNX. pthread is part of libc and qcc ignores the
+  flag. The old build commands still work, the flag is just redundant.
+- Test plan T1-T13 was run on the target. All passed, except for the deadlock
+  below which was found during T11 and then fixed.
 
-This code was prepared outside a QNX runtime, so the team must compile and execute it on the actual QNX environment before submission.
+## Fixed
 
-## Attribution labels used in the improved source
+1. **Deadlock between Central and a local controller** 
+   - Symptom: choosing "Set mode: CONGESTION" froze `test`, `central_controller`
+     and `display`. Only the local light sequencing kept running.
+   - Cause: Central blocked in `MsgSend()` waiting for I1's reply, while I1's
+     `server_thread` called `send_status()` (another blocking `MsgSend()` back
+     to Central) *before* replying. Neither could proceed - a circular wait.
+   - Fix: `send_status()` moved out of `handle_message()` and is now called in
+     `server_thread()` **after** `MsgReply()` completes.
+   - For the report: this is one of the four necessary deadlock conditions from
+     Lecture 8, removed by reordering. The existing code was already following
+     the lecture's other advice (not holding a mutex across `MsgSend()`).
 
-- `ORIGINAL BASELINE - DAM HOANG HUY`: code/functionality already present in the preserved `original_source/` baseline.
-- `PROPOSED CONTRIBUTION - TRAN VO VUONG`: code/functionality added or changed in this improved working version.
-- `MIXED`: an original section that has been extended by the proposed contribution.
+2. **Override countdown not visible on the Display** 
+   - `send_status()` only runs on a phase change, and the phase does not change
+     during an override hold, so the Display showed a frozen value.
+   - `override_hold()` now sends a status update once per second, the same 1 Hz
+     pattern `handle_railway_event()` already used.
 
-These labels are based on source comparison. They should be updated to match the team's actual reviewed, tested, and agreed contribution record before submission.
+## Added
+
+3. **Control-room priority override**
+   - `CommandMsg.hold_green` existed in the original `ipc.h` but was never read
+     by any process - it was dead code. The brief requires this feature:
+     "The central control room may also initiate override commands ... to deal
+     with exceptional situations (e.g. to provide a clear path for a visiting
+     dignitary)."
+   - An operator can now hold a chosen road green at one intersection, or
+     across all of them, for a bounded time.
+   - `hold_green` carries the direction (`OVERRIDE_NONE` / `OVERRIDE_VERTICAL` /
+     `OVERRIDE_HORIZONTAL`), `hold_seconds` the duration, and
+     `target_intersection` the target (0 = all, 1-6 = one).
+   - `StatusMsg` gained `override_dir` and `override_remaining` so the override
+     is visible at Central and on the Display.
+
+   Safety rules built in (expect questions on these):
+   - Railway safety still wins - a train event ends an override hold at once.
+   - No green-to-green. If the override targets the road that is currently red,
+     the active green finishes through amber and all-red first. Confirmed on
+     the target: `H_GREEN -> H_AMBER -> ALL_RED -> V_GREEN`.
+   - An override always expires. The countdown is kept **locally**, not by
+     Central, and is clamped (default 20 s, max 120 s), so a lost cancel
+     command or an offline Central cannot hold a green forever.
+   - Pedestrian requests are deferred, not dropped - the request stays pending
+     and is served at the first all-red after the override ends.
+
+4. **Display override column** 
+   - Seventh column showing direction and seconds left (e.g. `V 24s`), or `-`.
+
+5. **Test menu override options** 
+   - `10)` hold VERTICAL green, `11)` hold HORIZONTAL green, `12)` cancel.
+   - Each asks for a target intersection and, for 10 and 11, a duration.
+
+## Refactor note
+
+`hold_green()` now handles override, sensor-driven demand, and fixed timing in
+one place. The separate `interruptible_sleep(green_duration(...))` call for
+congestion mode was folded into it.
+
+**Behaviour with no override active is unchanged.** Re-tested: sensor mode
+still ends a green at the checkpoint (measured 10 s) and congestion mode still
+runs the full fixed green (measured 30 s).
+
+## New test cases
+
+| ID | Scenario | Status |
+| --- | --- | --- |
+| T14 | Override vertical green on I1 for 30 s | Passed on target |
+| T15 | Cancel an active override (option 12) | Passed on target |
+| T16 | Train event during an active override | Not yet run |
+| T17 | Override with target 0 (all intersections) | Not yet run |
+| T18 | Pedestrian request during an active override | Not yet run |
+| T19 | Regression: T2/T3 and T11 after the refactor | Passed on target |
+

@@ -47,6 +47,25 @@ static void broadcast_local(OpMode mode) {
     for (int i = 1; i <= INTERSECTIONS; ++i) send_cmd(i, &cmd);
 }
 
+/* [NEW] Route a control-room priority override to one intersection, or to the
+ * whole corridor when target_intersection is 0 (e.g. a green path for an
+ * emergency vehicle or visiting dignitary, as described in the project brief). */
+static void forward_override(const CommandMsg *src) {
+    CommandMsg cmd = *src;
+    cmd.hdr.type = MSG_COMMAND_OVERRIDE;
+
+    int target = src->target_intersection;
+    if (target >= 1 && target <= INTERSECTIONS) {
+        printf("[Central] OVERRIDE dir=%d %ds -> I%d\n", src->hold_green, src->hold_seconds, target);
+        fflush(stdout);
+        send_cmd(target, &cmd);
+    } else {
+        printf("[Central] OVERRIDE dir=%d %ds -> ALL intersections\n", src->hold_green, src->hold_seconds);
+        fflush(stdout);
+        for (int i = 1; i <= INTERSECTIONS; ++i) send_cmd(i, &cmd);
+    }
+}
+
 /* [ORIGINAL + IMPROVEMENT] Cached display connection; failure is non-fatal. */
 /* SECTION: Forward the latest local-controller status to the monitoring display.
  * ATTRIBUTION: MIXED - baseline DAM HOANG HUY; improved status payload integration TRAN VO VUONG. */
@@ -92,6 +111,16 @@ static void *server_thread(void *arg) {
             } else {
                 broadcast_local(msg.command.target_mode);
                 snprintf(reply.buf, REPLY_BUF_SIZE, "Mode %d broadcast", msg.command.target_mode);
+            }
+        } else if (msg.hdr.type == MSG_COMMAND_OVERRIDE) {
+            /* [NEW] Operator override; validated here and again at each local
+             * controller, which also clamps the duration. */
+            int dir = msg.command.hold_green;
+            if (dir != OVERRIDE_NONE && dir != OVERRIDE_VERTICAL && dir != OVERRIDE_HORIZONTAL) {
+                snprintf(reply.buf, REPLY_BUF_SIZE, "Invalid override direction %d", dir);
+            } else {
+                forward_override(&msg.command);
+                snprintf(reply.buf, REPLY_BUF_SIZE, "Override dir=%d forwarded", dir);
             }
         } else {
             snprintf(reply.buf, REPLY_BUF_SIZE, "Unknown message type %d", msg.hdr.type);
