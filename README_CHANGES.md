@@ -148,9 +148,13 @@ runs the full fixed green (measured 30 s).
 - **Pedestrian deferral during an override.** Serving pedestrians first is
   equally arguable. We should agree the reasoning before the demo rather than
   improvise it.
-- **Attribution.** New code is marked `[NEW]`, `[FIX]`, `[CHANGED]` and
-  `[WAS DEAD CODE - NOW IMPLEMENTED]`. Please review and confirm before
-  submission.
+- **Attribution.** Code added in this round is marked in the source with
+  `[NEW - VU LUONG MINH TRIET]`, `[FIX - VU LUONG MINH TRIET]`,
+  `[CHANGED - VU LUONG MINH TRIET]` and
+  `[WAS DEAD CODE - NOW IMPLEMENTED - VU LUONG MINH TRIET]`. The existing
+  `ORIGINAL BASELINE - DAM HOANG HUY` and
+  `PROPOSED CONTRIBUTION - TRAN VO VUONG` labels are unchanged. Please review
+  and confirm before submission.
 
 ## Still outstanding
 

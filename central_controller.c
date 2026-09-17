@@ -47,7 +47,7 @@ static void broadcast_local(OpMode mode) {
     for (int i = 1; i <= INTERSECTIONS; ++i) send_cmd(i, &cmd);
 }
 
-/* [NEW] Route a control-room priority override to one intersection, or to the
+/* [NEW - VU LUONG MINH TRIET] Route a control-room priority override to one intersection, or to the
  * whole corridor when target_intersection is 0 (e.g. a green path for an
  * emergency vehicle or visiting dignitary, as described in the project brief). */
 static void forward_override(const CommandMsg *src) {
@@ -113,7 +113,7 @@ static void *server_thread(void *arg) {
                 snprintf(reply.buf, REPLY_BUF_SIZE, "Mode %d broadcast", msg.command.target_mode);
             }
         } else if (msg.hdr.type == MSG_COMMAND_OVERRIDE) {
-            /* [NEW] Operator override; validated here and again at each local
+            /* [NEW - VU LUONG MINH TRIET] Operator override; validated here and again at each local
              * controller, which also clamps the duration. */
             int dir = msg.command.hold_green;
             if (dir != OVERRIDE_NONE && dir != OVERRIDE_VERTICAL && dir != OVERRIDE_HORIZONTAL) {
@@ -139,7 +139,7 @@ int main(void) {
         return EXIT_FAILURE;
     }
     printf("Central controller listening on %s\n", CENTRAL_ATTACH_POINT);
-    /* [NEW] Supervisory priority: above the display, but deliberately below
+    /* [NEW - VU LUONG MINH TRIET] Supervisory priority: above the display, but deliberately below
      * both local-controller threads. Central never drives a light directly and
      * the intersections keep operating without it, so it must never compete
      * with intersection control for the CPU. */

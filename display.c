@@ -44,7 +44,7 @@ static const char *rail_label(RailState r) {
     }
 }
 
-/* [NEW] Render the control-room override state, with the seconds remaining. */
+/* [NEW - VU LUONG MINH TRIET] Render the control-room override state, with the seconds remaining. */
 static const char *override_label(const StatusMsg *s, char *buf, size_t n) {
     if (s->override_dir == OVERRIDE_VERTICAL)   snprintf(buf, n, "V %ds", s->override_remaining);
     else if (s->override_dir == OVERRIDE_HORIZONTAL) snprintf(buf, n, "H %ds", s->override_remaining);
@@ -102,7 +102,7 @@ int main(void) {
     attach = name_attach(NULL, DISPLAY_ATTACH_POINT, 0);
     if (!attach) { fprintf(stderr, "Failed to name_attach %s\n", DISPLAY_ATTACH_POINT); return EXIT_FAILURE; }
     printf("Display listening on %s\n", DISPLAY_ATTACH_POINT);
-    /* [NEW] Lowest priority. The display has no deadline and produces no
+    /* [NEW - VU LUONG MINH TRIET] Lowest priority. The display has no deadline and produces no
      * control action, so redrawing must never delay a controller. Set
      * explicitly rather than left implicit, to document the decision. */
     rt_set_self_priority(PRIO_DISPLAY, "display");

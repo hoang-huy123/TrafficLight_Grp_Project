@@ -22,7 +22,7 @@
 #include <string.h>
 
 /* ==========================================================================
- * [NEW] Real-time scheduling policy and thread priority assignment.
+ * [NEW - VU LUONG MINH TRIET] Real-time scheduling policy and thread priority assignment.
  *
  * Rationale (Gomaa Task Priority Criteria, Lecture 6): time-critical tasks
  * with hard deadlines are given a high priority and kept as separate tasks;
@@ -111,17 +111,17 @@ typedef enum {
     MSG_STATUS_UPDATE = _IO_MAX + 1,
     MSG_COMMAND_SET_MODE,
     MSG_SENSOR_EVENT,
-    /* [NEW] Control-room priority override (e.g. clear path for an emergency
+    /* [NEW - VU LUONG MINH TRIET] Control-room priority override (e.g. clear path for an emergency
      * vehicle or visiting dignitary), as required by the project brief. */
     MSG_COMMAND_OVERRIDE
 } MsgType;
 
-/* [NEW] Override directions carried in CommandMsg.hold_green. */
+/* [NEW - VU LUONG MINH TRIET] Override directions carried in CommandMsg.hold_green. */
 #define OVERRIDE_NONE        0   /* cancel any active override        */
 #define OVERRIDE_VERTICAL    1   /* hold the vertical road green      */
 #define OVERRIDE_HORIZONTAL  2   /* hold the horizontal road green    */
 
-/* [NEW] Bounds applied by the local controller so a bad or malicious command
+/* [NEW - VU LUONG MINH TRIET] Bounds applied by the local controller so a bad or malicious command
  * can never hold a green indefinitely (fail-safe: overrides always expire). */
 #define OVERRIDE_DEFAULT_SECONDS 20
 #define OVERRIDE_MAX_SECONDS     120
@@ -135,19 +135,19 @@ typedef struct {
     int train_warning;       /* [ORIGINAL/COMPATIBILITY] retained for old display logic. */
     RailState rail_state;    /* [PROPOSED CONTRIBUTION - TRAN VO VUONG] distinguishes approach/gate/fault. */
     int pedestrian_pending;  /* [PROPOSED CONTRIBUTION - TRAN VO VUONG] observable pedestrian demand. */
-    int override_dir;        /* [NEW] OVERRIDE_* currently active at this intersection. */
-    int override_remaining;  /* [NEW] seconds left on the active override (0 if none). */
+    int override_dir;        /* [NEW - VU LUONG MINH TRIET] OVERRIDE_* currently active at this intersection. */
+    int override_remaining;  /* [NEW - VU LUONG MINH TRIET] seconds left on the active override (0 if none). */
 } StatusMsg;
 
 typedef struct {
     msg_header_t hdr;
     OpMode target_mode;
-    /* [WAS DEAD CODE - NOW IMPLEMENTED] hold_green was previously declared but
+    /* [WAS DEAD CODE - NOW IMPLEMENTED - VU LUONG MINH TRIET] hold_green was previously declared but
      * never read by any controller. It now carries the override direction
      * (OVERRIDE_NONE / OVERRIDE_VERTICAL / OVERRIDE_HORIZONTAL). */
     int hold_green;
-    int hold_seconds;        /* [NEW] requested override duration in seconds. */
-    int target_intersection; /* [NEW] 0 = all intersections, 1..6 = one only. */
+    int hold_seconds;        /* [NEW - VU LUONG MINH TRIET] requested override duration in seconds. */
+    int target_intersection; /* [NEW - VU LUONG MINH TRIET] 0 = all intersections, 1..6 = one only. */
 } CommandMsg;
 
 /* [ORIGINAL BASELINE - DAM HOANG HUY] Event names retained. */

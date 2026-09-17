@@ -44,7 +44,7 @@ static bool car_waiting_H = false;
 /* [PROPOSED CONTRIBUTION - TRAN VO VUONG] Pedestrian demand is now implemented rather than left as a placeholder. */
 static bool pedestrian_pending = false;
 
-/* [NEW] Control-room priority override state, protected by the same mutex.
+/* [NEW - VU LUONG MINH TRIET] Control-room priority override state, protected by the same mutex.
  * override_dir is OVERRIDE_NONE / OVERRIDE_VERTICAL / OVERRIDE_HORIZONTAL.
  * override_seconds always counts down to zero, so an override can never hold a
  * green permanently even if the cancel command is lost or Central goes offline. */
@@ -87,7 +87,7 @@ static void send_status(void) {
     LightState state = current_state;
     OpMode mode = current_mode;
     bool ped = pedestrian_pending;
-    int ov_dir = override_dir;       /* [NEW] snapshot under the same lock. */
+    int ov_dir = override_dir;       /* [NEW - VU LUONG MINH TRIET] snapshot under the same lock. */
     int ov_secs = override_seconds;
     pthread_mutex_unlock(&m);
 
@@ -109,7 +109,7 @@ static void send_status(void) {
     msg.train_warning = (rail != RAIL_CLEAR);
     msg.rail_state = rail;
     msg.pedestrian_pending = ped ? 1 : 0;
-    msg.override_dir = ov_dir;             /* [NEW] make override observable at Central/Display. */
+    msg.override_dir = ov_dir;             /* [NEW - VU LUONG MINH TRIET] make override observable at Central/Display. */
     msg.override_remaining = ov_secs;
 
     AckReply reply;
@@ -151,7 +151,7 @@ static bool interruptible_sleep(int seconds) {
     return true;
 }
 
-/* [NEW] Hold a green because the control room asked for a priority path.
+/* [NEW - VU LUONG MINH TRIET] Hold a green because the control room asked for a priority path.
  * Counts the override down once per second so it always expires on its own.
  * Railway safety still wins: a train event ends the override hold immediately. */
 static bool override_hold(bool is_vertical) {
@@ -174,7 +174,7 @@ static bool override_hold(bool is_vertical) {
         }
 
         sleep(1);
-        /* [FIX] Push a status update each second so Central/Display can show the
+        /* [FIX - VU LUONG MINH TRIET] Push a status update each second so Central/Display can show the
          * override counting down. Without this the phase never changes during the
          * hold, so no status was sent and Display stayed frozen at the initial
          * value. Same 1 Hz pattern already used by handle_railway_event(). */
@@ -211,7 +211,7 @@ static bool hold_green(bool is_vertical) {
         ++elapsed;
         ++checkpoint;
 
-        /* [NEW] An override for the OTHER road ends this green early, but still
+        /* [NEW - VU LUONG MINH TRIET] An override for the OTHER road ends this green early, but still
          * through the normal amber/all-red sequence - never a direct green-to-green. */
         pthread_mutex_lock(&m);
         int now_dir = override_dir;
@@ -239,7 +239,7 @@ static bool serve_pedestrian_if_needed(void) {
     pthread_mutex_lock(&m);
     bool pending = pedestrian_pending;
     int ov = override_dir;
-    /* [NEW] While a control-room priority path is active the pedestrian request is
+    /* [NEW - VU LUONG MINH TRIET] While a control-room priority path is active the pedestrian request is
      * DEFERRED, not discarded: the flag stays set and is served at the first
      * all-red once the override expires. Design assumption to justify in the
      * report: an emergency/dignitary path must not be interrupted mid-run. */
@@ -310,7 +310,7 @@ static void traffic_light_state(void) {
                 pthread_mutex_lock(&m);
                 car_waiting_V = false; /* [PROPOSED CONTRIBUTION - TRAN VO VUONG] current green serves queued demand. */
                 pthread_mutex_unlock(&m);
-                /* [CHANGED] hold_green() now covers override, sensor and fixed-timing
+                /* [CHANGED - VU LUONG MINH TRIET] hold_green() now covers override, sensor and fixed-timing
                  * modes in one place; behaviour without an override is unchanged. */
                 if (hold_green(true)) state = V_AMBER;
                 break;
@@ -325,7 +325,7 @@ static void traffic_light_state(void) {
                 if (!interruptible_sleep(ALL_RED_DURATION)) break;
                 if (!serve_pedestrian_if_needed()) break;
 
-                /* [NEW] An active override decides which road goes green next.
+                /* [NEW - VU LUONG MINH TRIET] An active override decides which road goes green next.
                  * The normal alternation resumes automatically once it expires. */
                 pthread_mutex_lock(&m);
                 int ov = override_dir;
@@ -343,7 +343,7 @@ static void traffic_light_state(void) {
                 pthread_mutex_lock(&m);
                 car_waiting_H = false;
                 pthread_mutex_unlock(&m);
-                /* [CHANGED] See V_GREEN above. */
+                /* [CHANGED - VU LUONG MINH TRIET] See V_GREEN above. */
                 if (hold_green(false)) state = H_AMBER;
                 break;
             }
@@ -373,7 +373,7 @@ static void handle_message(const Anymsg *msg, AckReply *reply) {
         current_mode = msg->command.target_mode;
         pthread_mutex_unlock(&m);
         snprintf(reply->buf, REPLY_BUF_SIZE, "Mode changed to %d", msg->command.target_mode);
-        /* [FIX - deadlock] Do NOT call send_status() here: this handler runs while the
+        /* [FIX - deadlock - VU LUONG MINH TRIET] Do NOT call send_status() here: this handler runs while the
          * sender (e.g. Central's broadcast_local) is still blocked inside MsgSend()
          * waiting for THIS reply. If we call send_status() (which itself blocks on
          * MsgSend to Central) before replying, Central can never receive it because
@@ -382,7 +382,7 @@ static void handle_message(const Anymsg *msg, AckReply *reply) {
         return;
     }
 
-    /* [NEW] Control-room priority override. */
+    /* [NEW - VU LUONG MINH TRIET] Control-room priority override. */
     if (msg->hdr.type == MSG_COMMAND_OVERRIDE) {
         int dir = msg->command.hold_green;
         int secs = msg->command.hold_seconds;
@@ -429,7 +429,7 @@ static void handle_message(const Anymsg *msg, AckReply *reply) {
         }
 
         snprintf(reply->buf, REPLY_BUF_SIZE, "Sensor event %d processed", event);
-        /* [FIX - deadlock] See note above: status push moved to after MsgReply(). */
+        /* [FIX - deadlock - VU LUONG MINH TRIET] See note above: status push moved to after MsgReply(). */
         return;
     }
 
@@ -440,7 +440,7 @@ static void handle_message(const Anymsg *msg, AckReply *reply) {
  * ATTRIBUTION: ORIGINAL BASELINE - DAM HOANG HUY. */
 static void *server_thread(void *arg) {
     (void)arg;
-    /* [NEW] Highest priority in the system: railway and sensor events must be
+    /* [NEW - VU LUONG MINH TRIET] Highest priority in the system: railway and sensor events must be
      * received and acted on ahead of all other work at this intersection. */
     rt_set_self_priority(PRIO_LOCAL_EVENT, "local event intake");
     Anymsg msg;
@@ -457,7 +457,7 @@ static void *server_thread(void *arg) {
         reply.hdr.type = 0x01;
         handle_message(&msg, &reply);
         MsgReply(rcvid, EOK, &reply, sizeof(reply));
-        /* [FIX - deadlock] Push the status update only after the reply has been sent,
+        /* [FIX - deadlock - VU LUONG MINH TRIET] Push the status update only after the reply has been sent,
          * so we never hold a sender (Central or test) blocked while we try to reach
          * Central ourselves. See handle_message() for the full explanation. */
         if (msg.hdr.type == MSG_COMMAND_SET_MODE || msg.hdr.type == MSG_SENSOR_EVENT ||
@@ -488,7 +488,7 @@ int main(int argc, char *argv[]) {
 
     printf("I%d local controller listening on %s\n", intersection_id, name);
 
-    /* [NEW] This thread runs the light state machine, which enforces amber and
+    /* [NEW - VU LUONG MINH TRIET] This thread runs the light state machine, which enforces amber and
      * clearance timing. It is time-critical, so it is raised well above the
      * default, but kept below the event-intake thread created next. */
     rt_set_self_priority(PRIO_LOCAL_CONTROL, "local state machine");

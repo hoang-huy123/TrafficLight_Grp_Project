@@ -48,7 +48,7 @@ static void send_mode(OpMode mode) {
     name_close(coid);
 }
 
-/* [NEW] Ask Central to issue a control-room priority override. target 0 = all
+/* [NEW - VU LUONG MINH TRIET] Ask Central to issue a control-room priority override. target 0 = all
  * intersections (corridor-wide green path), 1..6 = a single intersection. */
 static void send_override(int dir, int seconds, int target) {
     int coid = name_open(CENTRAL_ATTACH_POINT, 0);
@@ -93,7 +93,7 @@ static int needs_id(int choice) { return choice >= 1 && choice <= 7; }
  * ATTRIBUTION: MIXED - baseline DAM HOANG HUY; expanded scenarios TRAN VO VUONG. */
 int main(void) {
     char line[32];
-    /* [NEW] Lowest priority: the simulator stands in for external hardware and
+    /* [NEW - VU LUONG MINH TRIET] Lowest priority: the simulator stands in for external hardware and
      * is not part of the deployed system, so it must not preempt any
      * controller. */
     rt_set_self_priority(PRIO_TEST, "test simulator");
@@ -116,7 +116,7 @@ int main(void) {
             case 7: send_sensor(id, TRAIN_FAULT, "Railway fault"); break;
             case 8: send_mode(MODE_CONGESTION); break;
             case 9: send_mode(MODE_SENSOR); break;
-            /* [NEW] Control-room override scenarios. */
+            /* [NEW - VU LUONG MINH TRIET] Control-room override scenarios. */
             case 10:
             case 11: {
                 int dir = (choice == 10) ? OVERRIDE_VERTICAL : OVERRIDE_HORIZONTAL;
