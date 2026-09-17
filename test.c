@@ -93,6 +93,10 @@ static int needs_id(int choice) { return choice >= 1 && choice <= 7; }
  * ATTRIBUTION: MIXED - baseline DAM HOANG HUY; expanded scenarios TRAN VO VUONG. */
 int main(void) {
     char line[32];
+    /* [NEW] Lowest priority: the simulator stands in for external hardware and
+     * is not part of the deployed system, so it must not preempt any
+     * controller. */
+    rt_set_self_priority(PRIO_TEST, "test simulator");
     while (1) {
         print_menu(); if (!fgets(line, sizeof(line), stdin)) break;
         int choice = atoi(line); if (choice == 0) break;

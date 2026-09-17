@@ -139,6 +139,11 @@ int main(void) {
         return EXIT_FAILURE;
     }
     printf("Central controller listening on %s\n", CENTRAL_ATTACH_POINT);
+    /* [NEW] Supervisory priority: above the display, but deliberately below
+     * both local-controller threads. Central never drives a light directly and
+     * the intersections keep operating without it, so it must never compete
+     * with intersection control for the CPU. */
+    rt_set_self_priority(PRIO_CENTRAL, "central controller");
     server_thread(NULL);
     if (display_coid != -1) name_close(display_coid);
     name_detach(attach, 0);

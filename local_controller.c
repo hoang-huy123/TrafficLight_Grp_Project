@@ -174,6 +174,11 @@ static bool override_hold(bool is_vertical) {
         }
 
         sleep(1);
+        /* [FIX] Push a status update each second so Central/Display can show the
+         * override counting down. Without this the phase never changes during the
+         * hold, so no status was sent and Display stayed frozen at the initial
+         * value. Same 1 Hz pattern already used by handle_railway_event(). */
+        send_status();
         if (railway_stop_required()) return false; /* railway safety has highest priority */
     }
 }
@@ -435,6 +440,9 @@ static void handle_message(const Anymsg *msg, AckReply *reply) {
  * ATTRIBUTION: ORIGINAL BASELINE - DAM HOANG HUY. */
 static void *server_thread(void *arg) {
     (void)arg;
+    /* [NEW] Highest priority in the system: railway and sensor events must be
+     * received and acted on ahead of all other work at this intersection. */
+    rt_set_self_priority(PRIO_LOCAL_EVENT, "local event intake");
     Anymsg msg;
     while (1) {
         int rcvid = MsgReceive(attach->chid, &msg, sizeof(msg), NULL);
@@ -479,6 +487,12 @@ int main(int argc, char *argv[]) {
     }
 
     printf("I%d local controller listening on %s\n", intersection_id, name);
+
+    /* [NEW] This thread runs the light state machine, which enforces amber and
+     * clearance timing. It is time-critical, so it is raised well above the
+     * default, but kept below the event-intake thread created next. */
+    rt_set_self_priority(PRIO_LOCAL_CONTROL, "local state machine");
+
     pthread_t server;
     if (pthread_create(&server, NULL, server_thread, NULL) != 0) {
         perror("pthread_create");

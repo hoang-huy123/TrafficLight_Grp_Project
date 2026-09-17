@@ -17,6 +17,65 @@
 #include <sys/dispatch.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <pthread.h>
+#include <sched.h>
+#include <string.h>
+
+/* ==========================================================================
+ * [NEW] Real-time scheduling policy and thread priority assignment.
+ *
+ * Rationale (Gomaa Task Priority Criteria, Lecture 6): time-critical tasks
+ * with hard deadlines are given a high priority and kept as separate tasks;
+ * non-time-critical tasks are given a low priority so they cannot starve the
+ * critical ones. QNX offers 255 priority levels; the default is 10, and a
+ * higher number means a higher priority.
+ *
+ *   21  Local event intake     - railway/sensor events must preempt everything
+ *                                else at an intersection. A train event that
+ *                                waits behind other work is a safety failure.
+ *   19  Local state machine    - enforces amber and clearance timing. Late
+ *                                transitions are a safety failure, so it sits
+ *                                just below event intake.
+ *   14  Central controller     - supervisory only. It never drives a light
+ *                                directly, and the locals are designed to keep
+ *                                running without it, so it must not compete
+ *                                with intersection control.
+ *   10  Display                - output only, no deadline. Left at the default
+ *                                so redrawing can never delay a controller.
+ *   10  Test simulator         - not part of the deployed system.
+ *
+ * Policy: SCHED_RR. Our threads are not CPU-bound (they block on timed waits
+ * and MsgReceive), so round-robin costs nothing and protects against a same-
+ * priority thread monopolising the CPU. SCHED_FIFO is the alternative if
+ * strictly run-to-block behaviour is preferred.
+ * ========================================================================== */
+#define RT_SCHED_POLICY     SCHED_RR
+
+#define PRIO_LOCAL_EVENT    21
+#define PRIO_LOCAL_CONTROL  19
+#define PRIO_CENTRAL        14
+#define PRIO_DISPLAY        10
+#define PRIO_TEST           10
+
+/* Raise (or set) the calling thread's scheduling priority. Failure is not
+ * fatal: the system still runs correctly at the default priority, it simply
+ * loses the timing guarantee, so we warn and continue rather than abort. */
+static inline int rt_set_self_priority(int priority, const char *label) {
+    struct sched_param param;
+    memset(&param, 0, sizeof(param));
+    param.sched_priority = priority;
+
+    int rc = pthread_setschedparam(pthread_self(), RT_SCHED_POLICY, &param);
+    if (rc != 0) {
+        fprintf(stderr, "[rt] WARNING: could not set %s priority to %d (%s); "
+                        "continuing at default priority.\n",
+                label, priority, strerror(rc));
+        return -1;
+    }
+    printf("[rt] %s at priority %d (SCHED_RR)\n", label, priority);
+    fflush(stdout);
+    return 0;
+}
 
 /* SECTION: Shared traffic-light state definitions used by all QNX processes. */
 /* [ORIGINAL BASELINE - DAM HOANG HUY] Road-light states retained from the team's implementation. */
