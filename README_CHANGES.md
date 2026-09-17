@@ -34,7 +34,7 @@ Changed files: `ipc.h`, `local_controller.c`, `central_controller.c`,
 
 ## Fixed
 
-1. **Deadlock between Central and a local controller** (VU LUONG MINH TRIET)
+1. **Deadlock between Central and a local controller** 
    - Symptom: choosing "Set mode: CONGESTION" froze `test`, `central_controller`
      and `display`. Only the local light sequencing kept running.
    - Cause: Central blocked in `MsgSend()` waiting for I1's reply, while I1's
@@ -54,7 +54,7 @@ Changed files: `ipc.h`, `local_controller.c`, `central_controller.c`,
 
 ## Added
 
-3. **Control-room priority override** (VU LUONG MINH TRIET)
+3. **Control-room priority override** 
    - `CommandMsg.hold_green` existed in the original `ipc.h` but was never read
      by any process - it was dead code. The brief requires this feature:
      "The central control room may also initiate override commands ... to deal
@@ -79,14 +79,14 @@ Changed files: `ipc.h`, `local_controller.c`, `central_controller.c`,
    - Pedestrian requests are deferred, not dropped - the request stays pending
      and is served at the first all-red after the override ends.
 
-4. **Display override column** (VU LUONG MINH TRIET)
+4. **Display override column** 
    - Seventh column showing direction and seconds left (e.g. `V 24s`), or `-`.
 
-5. **Test menu override options** (VU LUONG MINH TRIET)
+5. **Test menu override options** 
    - `10)` hold VERTICAL green, `11)` hold HORIZONTAL green, `12)` cancel.
    - Each asks for a target intersection and, for 10 and 11, a duration.
 
-6. **Real-time thread priorities** (VU LUONG MINH TRIET)
+6. **Real-time thread priorities** 
    - Nothing in the system set a scheduling priority or policy - every thread
      ran at the QNX default of 10. Lecture 6 (Gomaa Task Priority Criteria)
      covers this explicitly, so it was worth doing properly.
@@ -142,32 +142,3 @@ runs the full fixed green (measured 30 s).
 | T17 | Override with target 0 (all intersections) | Not yet run |
 | T18 | Pedestrian request during an active override | Not yet run |
 | T19 | Regression: T2/T3 and T11 after the refactor | Passed on target |
-
-## For the team to decide
-
-- **Pedestrian deferral during an override.** Serving pedestrians first is
-  equally arguable. We should agree the reasoning before the demo rather than
-  improvise it.
-- **Attribution.** Code added in this round is marked in the source with
-  `[NEW - VU LUONG MINH TRIET]`, `[FIX - VU LUONG MINH TRIET]`,
-  `[CHANGED - VU LUONG MINH TRIET]` and
-  `[WAS DEAD CODE - NOW IMPLEMENTED - VU LUONG MINH TRIET]`. The existing
-  `ORIGINAL BASELINE - DAM HOANG HUY` and
-  `PROPOSED CONTRIBUTION - TRAN VO VUONG` labels are unchanged. Please review
-  and confirm before submission.
-
-## Still outstanding
-
-1. Multi-node QNX (Qnet) - still one VM. Needs a second VM and attach points
-   changed from `local_1` to `/net/<hostname>/local_1`.
-2. Central's broadcast is sequential and blocking, with no timeout.
-3. No coordinated railway event across I1 and I2 - one crossing, but a train
-   currently has to be injected per intersection.
-4. Trains from both directions not distinguished (double-track corridor).
-5. Timing constants still unjustified - the brief asks for R1-R5 timing and
-   coordination assumptions to be stated and justified.
-6. `sleep()` used rather than QNX timers (`timer_create` + `SIGEV_PULSE`, Week 6).
-7. Pulses ignored in `server_thread` (`rcvid == 0`); Week 8 handles
-   `_PULSE_CODE_DISCONNECT`.
-8. Separate train-line controller process (the brief mentions it for a full
-   implementation).
