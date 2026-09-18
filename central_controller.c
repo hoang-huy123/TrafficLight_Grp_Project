@@ -1,179 +1,151 @@
+/*
+ * ============================================================================
+ * FILE: central_controller.c
+ * OWNERSHIP NOTE: MIXED: baseline by DAM HOANG HUY; proposed improvements by TRAN VO VUONG
+ *
+ * Attribution in this file is based on comparison with the preserved baseline
+ * in original_source/. "Proposed contribution" means code added/changed in the
+ * improved version and should only be claimed after review, testing, and actual
+ * contribution by the named team member.
+ * ============================================================================
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
-#include "ipc.h"
-#include <pthread.h>
-#include <stdbool.h>
-#include <unistd.h>
 #include <string.h>
+#include <errno.h>
+#include "ipc.h"
 
+#define INTERSECTIONS 6
+static name_attach_t *attach;
+static int display_coid = -1;
 
-#define INTERSECTIONS 6 //number of local controllers
-
-name_attach_t *attach;
-int display_coid = -1;
-
-//send commands to local controller
-void send_cmd(int intersection_id, CommandMsg cmd) {
-	char name[NAME_MAXLEN];
-	local_ctrl_name(name, intersection_id);
-
-	int coid = name_open(name, 0);
-
-	if(coid == -1) {
-		printf("[Central] send_cmd: could not connect to %s\n", name);
-		return;
-	}
-
-	AckReply reply;
-	if(MsgSend(coid, &cmd, sizeof(cmd), &reply, sizeof(reply)) == -1) {
-		printf("[Central] send_cmd: MsgSend to %s failed\n", name);
-	}
-	name_close(coid);
+/* [ORIGINAL BASELINE - DAM HOANG HUY] Central sends high-level mode commands; locals still own light sequencing. */
+/* SECTION: Send a high-level operating-mode command to one local controller.
+ * ATTRIBUTION: ORIGINAL BASELINE - DAM HOANG HUY. */
+static void send_cmd(int intersection_id, const CommandMsg *cmd) {
+    char name[NAME_MAXLEN];
+    local_ctrl_name(name, intersection_id);
+    int coid = name_open(name, 0);
+    if (coid == -1) {
+        printf("[Central] I%d offline; command skipped.\n", intersection_id);
+        return;
+    }
+    AckReply reply;
+    if (MsgSend(coid, cmd, sizeof(*cmd), &reply, sizeof(reply)) == -1)
+        printf("[Central] command to I%d failed.\n", intersection_id);
+    name_close(coid);
 }
 
-//function for sending command to all local controllers (used for changing sequence pattern)
-void broadcast_local(OpMode mode) {
-	CommandMsg cmd;
-	memset(&cmd, 0, sizeof(cmd));
-	cmd.hdr.type = MSG_COMMAND_SET_MODE;
-	cmd.target_mode = mode;
-	cmd.hold_green = 0;
-	for(int i = 1; i <= INTERSECTIONS; i++) {
-		send_cmd(i, cmd);
-	}
+/* SECTION: Broadcast a selected operating mode to all six local controllers.
+ * ATTRIBUTION: ORIGINAL BASELINE - DAM HOANG HUY. */
+static void broadcast_local(OpMode mode) {
+    CommandMsg cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.hdr.type = MSG_COMMAND_SET_MODE;
+    cmd.target_mode = mode;
+    for (int i = 1; i <= INTERSECTIONS; ++i) send_cmd(i, &cmd);
 }
 
-//send data to display thread
-void send_to_display(const StatusMsg *msg) {
-	if (display_coid == -1) {
-		display_coid = name_open(DISPLAY_ATTACH_POINT, 0);
-		if (display_coid == -1) {
-			printf("[Central] forward_to_display: could not connect to %s\n", DISPLAY_ATTACH_POINT);
-			return;
-		}
-	}
+/* [NEW - VU LUONG MINH TRIET] Route a control-room priority override to one intersection, or to the
+ * whole corridor when target_intersection is 0 (e.g. a green path for an
+ * emergency vehicle or visiting dignitary, as described in the project brief). */
+static void forward_override(const CommandMsg *src) {
+    CommandMsg cmd = *src;
+    cmd.hdr.type = MSG_COMMAND_OVERRIDE;
 
-	AckReply reply;
-	if(MsgSend(display_coid, msg, sizeof(*msg), &reply, sizeof(reply)) == -1) {
-		printf("[Central] forward_to_display: MsgSend failed, dropping connection\n");
-		name_close(display_coid);
-		display_coid = -1;
-	}
+    int target = src->target_intersection;
+    if (target >= 1 && target <= INTERSECTIONS) {
+        printf("[Central] OVERRIDE dir=%d %ds -> I%d\n", src->hold_green, src->hold_seconds, target);
+        fflush(stdout);
+        send_cmd(target, &cmd);
+    } else {
+        printf("[Central] OVERRIDE dir=%d %ds -> ALL intersections\n", src->hold_green, src->hold_seconds);
+        fflush(stdout);
+        for (int i = 1; i <= INTERSECTIONS; ++i) send_cmd(i, &cmd);
+    }
 }
 
-//listen to message sent to central controller
-void *server_thread(void *arg) {
-	Anymsg msg;
-	int rcvid = 0;
-	int msgnum = 0;
-	int Stay_alive = 1, living = 0;
-
-	living = 1;
-	while(living) {
-		rcvid = MsgReceive(attach->chid, &msg, sizeof(msg), NULL);
-
-		if(rcvid == -1) {
-			printf("\nFailed to receive\n");
-			break;
-		}
-
-		if (rcvid == 0) {
-			switch (msg.hdr.code) {
-				case _PULSE_CODE_DISCONNECT:
-					if (Stay_alive == 0) {
-						ConnectDetach(msg.hdr.scoid);
-						printf("\n[Central] Server was told to Detach ...\n");
-						living = 0;
-						continue;
-					} else {
-						printf("\n[Central] Received Detach pulse but rejected it ...\n");
-					}
-					break;
-
-				case _PULSE_CODE_UNBLOCK:
-					printf("\n[Central] Got _PULSE_CODE_UNBLOCK after %d msgnum\n", msgnum);
-					break;
-
-				case _PULSE_CODE_COIDDEATH:
-					printf("\n[Central] Got _PULSE_CODE_COIDDEATH after %d msgnum\n", msgnum);
-					break;
-
-				case _PULSE_CODE_THREADDEATH:
-					printf("\n[Central] Got _PULSE_CODE_THREADDEATH after %d msgnum\n", msgnum);
-					break;
-
-				default:
-					printf("\n[Central] Got some other pulse after %d msgnum\n", msgnum);
-					break;
-			}
-			continue;
-		}
-
-		if (rcvid > 0) {
-			msgnum++;
-
-			if (msg.hdr.type == _IO_CONNECT) {
-				MsgReply(rcvid, EOK, NULL, 0);
-				msgnum--;
-				continue;
-			}
-
-			if (msg.hdr.type > _IO_BASE && msg.hdr.type <= _IO_MAX) {
-				MsgError(rcvid, ENOSYS);
-				continue;
-			}
-
-			AckReply reply;
-			memset(&reply, 0, sizeof(reply));
-			reply.hdr.type = 0x01;
-			reply.hdr.subtype = 0x00;
-
-			//display status sent from local controller
-			if(msg.hdr.type == MSG_STATUS_UPDATE) {
-				printf("[Central] I%d mode=%d V=%d H=%d train=%d\n",
-				       msg.status.intersection_id, msg.status.mode,		// mode 0 = congestion, mode 1 = sensor
-				       msg.status.V_light, msg.status.H_light, msg.status.train_warning);	//v_light and h_light numbers are mapped directly to LightState enum in ipc.h
-				fflush(stdout);
-
-				send_to_display(&msg.status); //also send to display for clearer demonstration
-				snprintf(reply.buf, REPLY_BUF_SIZE, "Status recorded for I%d", msg.status.intersection_id);
-
-			} else if(msg.hdr.type == MSG_COMMAND_SET_MODE) { //for mode switching request sent from test.c
-				printf("[Central] Received mode-switch request -> changing to mode %d\n", msg.command.target_mode);
-				fflush(stdout);
-				broadcast_local(msg.command.target_mode);
-				snprintf(reply.buf, REPLY_BUF_SIZE, "Mode %d broadcast to all intersections", msg.command.target_mode);
-
-			} else {
-				snprintf(reply.buf, REPLY_BUF_SIZE, "Unknown message type %d", msg.hdr.type);
-			}
-
-			MsgReply(rcvid, EOK, &reply, sizeof(reply));
-		} else {
-			printf("\n[Central] ERROR: received something, but could not handle it correctly\n");
-		}
-	}
-
-	name_detach(attach, 0);
-	return NULL;
-
+/* [ORIGINAL + IMPROVEMENT] Cached display connection; failure is non-fatal. */
+/* SECTION: Forward the latest local-controller status to the monitoring display.
+ * ATTRIBUTION: MIXED - baseline DAM HOANG HUY; improved status payload integration TRAN VO VUONG. */
+static void send_to_display(const StatusMsg *msg) {
+    if (display_coid == -1) display_coid = name_open(DISPLAY_ATTACH_POINT, 0);
+    if (display_coid == -1) return;
+    AckReply reply;
+    if (MsgSend(display_coid, msg, sizeof(*msg), &reply, sizeof(reply)) == -1) {
+        name_close(display_coid);
+        display_coid = -1;
+    }
 }
 
-int main (void) {
+/* SECTION: Central QNX receive/reply loop for status updates and operator mode commands.
+ * ATTRIBUTION: MIXED - baseline DAM HOANG HUY; railway/fault status integration TRAN VO VUONG. */
+static void *server_thread(void *arg) {
+    (void)arg;
+    Anymsg msg;
+    while (1) {
+        int rcvid = MsgReceive(attach->chid, &msg, sizeof(msg), NULL);
+        if (rcvid == -1) { perror("MsgReceive"); break; }
+        if (rcvid == 0) continue;
+        if (msg.hdr.type == _IO_CONNECT) { MsgReply(rcvid, EOK, NULL, 0); continue; }
+        if (msg.hdr.type > _IO_BASE && msg.hdr.type <= _IO_MAX) { MsgError(rcvid, ENOSYS); continue; }
 
-	//attach using name
-	if((attach = name_attach(NULL, CENTRAL_ATTACH_POINT, 0)) == NULL) {
-		printf("\nFailed to name_attach: %s\n", CENTRAL_ATTACH_POINT);
-		printf("\nAnother server with same name maybe running\n");
-		return EXIT_FAILURE;
-	}
+        AckReply reply;
+        memset(&reply, 0, sizeof(reply));
+        reply.hdr.type = 0x01;
 
-	printf("----Central controller listening on ATTACH_POINT: %s---\n", CENTRAL_ATTACH_POINT);
-	fflush(stdout);
+        if (msg.hdr.type == MSG_STATUS_UPDATE) {
+            printf("[Central] I%d mode=%d V=%d H=%d rail=%d ped=%d\n",
+                   msg.status.intersection_id, msg.status.mode,
+                   msg.status.V_light, msg.status.H_light,
+                   msg.status.rail_state, msg.status.pedestrian_pending);
+            if (msg.status.rail_state == RAIL_FAULT_STATE)
+                printf("[Central] *** RAILWAY FAULT reported by I%d ***\n", msg.status.intersection_id);
+            fflush(stdout);
+            send_to_display(&msg.status);
+            snprintf(reply.buf, REPLY_BUF_SIZE, "Status recorded for I%d", msg.status.intersection_id);
+        } else if (msg.hdr.type == MSG_COMMAND_SET_MODE) {
+            if (msg.command.target_mode != MODE_CONGESTION && msg.command.target_mode != MODE_SENSOR) {
+                snprintf(reply.buf, REPLY_BUF_SIZE, "Invalid mode");
+            } else {
+                broadcast_local(msg.command.target_mode);
+                snprintf(reply.buf, REPLY_BUF_SIZE, "Mode %d broadcast", msg.command.target_mode);
+            }
+        } else if (msg.hdr.type == MSG_COMMAND_OVERRIDE) {
+            /* [NEW - VU LUONG MINH TRIET] Operator override; validated here and again at each local
+             * controller, which also clamps the duration. */
+            int dir = msg.command.hold_green;
+            if (dir != OVERRIDE_NONE && dir != OVERRIDE_VERTICAL && dir != OVERRIDE_HORIZONTAL) {
+                snprintf(reply.buf, REPLY_BUF_SIZE, "Invalid override direction %d", dir);
+            } else {
+                forward_override(&msg.command);
+                snprintf(reply.buf, REPLY_BUF_SIZE, "Override dir=%d forwarded", dir);
+            }
+        } else {
+            snprintf(reply.buf, REPLY_BUF_SIZE, "Unknown message type %d", msg.hdr.type);
+        }
+        MsgReply(rcvid, EOK, &reply, sizeof(reply));
+    }
+    return NULL;
+}
 
-	server_thread(NULL);
-
-
-
-	return 0;
+/* SECTION: Create the central QNX name attachment and start the central server.
+ * ATTRIBUTION: ORIGINAL BASELINE - DAM HOANG HUY. */
+int main(void) {
+    attach = name_attach(NULL, CENTRAL_NAME, 0);
+    if (!attach) {
+        fprintf(stderr, "Failed to name_attach %s\n", CENTRAL_NAME);
+        return EXIT_FAILURE;
+    }
+    printf("Central controller listening on %s\n", CENTRAL_NAME);
+    /* [NEW - VU LUONG MINH TRIET] Supervisory priority: above the display, but deliberately below
+     * both local-controller threads. Central never drives a light directly and
+     * the intersections keep operating without it, so it must never compete
+     * with intersection control for the CPU. */
+    rt_set_self_priority(PRIO_CENTRAL, "central controller");
+    server_thread(NULL);
+    if (display_coid != -1) name_close(display_coid);
+    name_detach(attach, 0);
+    return 0;
 }
